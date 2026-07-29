@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { emptyCardDraft } from "@/domain/library";
-import { closeDatabaseForTests, libraryRepository, resetDatabaseForTests } from "@/lib/repositories";
+import { closeDatabaseForTests, getStorageMode, libraryRepository, resetDatabaseForTests, setStorageMode } from "@/lib/repositories";
 
-beforeEach(async () => { await resetDatabaseForTests(); });
-afterEach(async () => { await resetDatabaseForTests(); });
+beforeEach(async () => { setStorageMode("local"); await resetDatabaseForTests(); });
+afterEach(async () => { setStorageMode("local"); await resetDatabaseForTests(); });
 
 describe("IndexedDB教材リポジトリ", () => {
   it("初回データは一度だけ作成される", async () => {
@@ -23,6 +23,14 @@ describe("IndexedDB教材リポジトリ", () => {
     const folders = await libraryRepository.listFolders();
     expect(folders.some((item) => item.id === folder.id)).toBe(true);
     expect((await libraryRepository.listCards(wordSet.id))[0]).toMatchObject({ english: "reload", japanese: "再読み込み" });
+  });
+
+  it("保存先Facadeはローカルを維持し、未設定のクラウドでは安全に失敗する", async () => {
+    await libraryRepository.createFolder("ローカル");
+    expect(getStorageMode()).toBe("local");
+    expect(await libraryRepository.listFolders()).toHaveLength(1);
+    setStorageMode("cloud");
+    await expect(libraryRepository.listFolders()).rejects.toThrow("Supabase接続情報");
   });
 
   it("フォルダ、セット、カードを作成・検索・並べ替えできる", async () => {

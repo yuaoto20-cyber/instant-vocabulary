@@ -5,11 +5,59 @@ import { Card, CardDraft, Folder, WordSetSummary, emptyCardDraft, isSetReady } f
 import { libraryRepository } from "@/lib/repositories";
 import { StudySession } from "@/features/study/StudySession";
 import { BulkImportScreen } from "@/features/bulk/BulkImportScreen";
+import { AccountPanel } from "@/features/auth/AccountPanel";
+import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
 
 type View = "home" | "folder" | "set" | "bulk" | "study";
 type Confirmation = { title: string; message: string; run: () => Promise<void> };
 
+type PageAuthState = "checking" | "anonymous" | "authenticated" | "error" | "unconfigured";
+
 export default function Home() {
+  const [authState, setAuthState] = useState<PageAuthState>(() => isSupabaseConfigured() ? "checking" : "unconfigured");
+  const [authError, setAuthError] = useState("");
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    let active = true;
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      if (error) { setAuthError(error.message); setAuthState("error"); return; }
+      setAuthState(data.session ? "authenticated" : "anonymous");
+    });
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (active) setAuthState(session ? "authenticated" : "anonymous");
+    });
+    return () => { active = false; subscription.subscription.unsubscribe(); };
+  }, []);
+
+  if (authState === "checking") return <main className="page centered"><p>認証状態を確認しています…</p></main>;
+  if (authState === "error") return <main className="page centered"><section className="setup-card"><h1>認証を確認できません</h1><p>{authError}</p><button className="primary" onClick={() => window.location.reload()}>再試行</button></section></main>;
+  if (authState === "anonymous") return <LoginGate />;
+  return <VocabularyApp />;
+}
+
+function LoginGate() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const signIn = async (event: FormEvent) => {
+    event.preventDefault();
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    try {
+      setBusy(true); setError("");
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) throw signInError;
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "ログインに失敗しました。"); }
+    finally { setBusy(false); }
+  };
+  return <main className="page public-login-page"><section className="setup-card"><p className="eyebrow">PRIVATE VOCABULARY</p><h1>Instant Vocabulary</h1><p>このアプリは個人用です。登録済みのアカウントでログインしてください。</p><form className="auth-form" onSubmit={(event) => void signIn(event)}><label>メールアドレス<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>パスワード<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>{error && <p className="auth-error" role="alert">{error}</p>}<button className="primary" disabled={busy} type="submit">{busy ? "ログイン中…" : "ログイン"}</button></form></section></main>;
+}
+
+function VocabularyApp() {
   const [view, setView] = useState<View>("home");
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
@@ -52,7 +100,7 @@ export default function Home() {
   if (!ready) return <main className="page centered"><p>教材を読み込んでいます…</p></main>;
 
   return <main className="page library-page">
-    <header className="app-header"><button className="brand" onClick={() => setView("home")}>Instant Vocabulary</button>{view !== "home" && <button className="back-button" onClick={() => setView(view === "set" ? "folder" : "home")}>← 戻る</button>}</header>
+    <header className="app-header"><button className="brand" onClick={() => setView("home")}>Instant Vocabulary</button><div>{view !== "home" && <button className="back-button" onClick={() => setView(view === "set" ? "folder" : "home")}>← 戻る</button>}<AccountPanel onStorageChanged={() => { setView("home"); setSelectedFolder(null); setSelectedSet(null); setCards([]); void loadFolders().catch(fail); }} /></div></header>
     {error && <div className="error-notice" role="alert"><span>{error}</span><button onClick={() => setError("")}>閉じる</button></div>}
 
     {view === "home" && <section className="library-content"><div className="page-title"><p className="eyebrow">YOUR LIBRARY</p><h1>教材フォルダ</h1><p>単語セットをフォルダごとに整理できます。</p></div><form className="quick-form" onSubmit={submitFolder}><input value={folderName} onChange={(event) => setFolderName(event.target.value)} placeholder="新しいフォルダ名" aria-label="新しいフォルダ名" /><button className="primary" type="submit">フォルダを作成</button></form>{folders.length ? <div className="folder-grid">{folders.map((folder) => <button className="library-card" key={folder.id} onClick={() => void openFolder(folder)}><span className="folder-icon">▰</span><strong>{folder.name}</strong><small>セットを開く →</small></button>)}</div> : <Empty title="フォルダがありません" message="上の入力欄から最初のフォルダを作成してください。" />}</section>}

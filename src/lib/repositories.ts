@@ -1,6 +1,7 @@
 import { DBSchema, IDBPDatabase, openDB, deleteDB } from "idb";
 import { Card, CardDraft, Folder, WordSet, WordSetSummary } from "@/domain/library";
 import { DuplicateStrategy, analyzeImport } from "@/domain/bulkImport";
+import { cloudLibraryRepository } from "@/lib/cloudRepository";
 
 interface VocabularyDB extends DBSchema {
   folders: { key: string; value: Folder };
@@ -11,6 +12,7 @@ interface VocabularyDB extends DBSchema {
 
 export interface FolderRepository {
   listFolders(): Promise<Folder[]>;
+  getFolder(id: string): Promise<Folder | undefined>;
   createFolder(name: string): Promise<Folder>;
   updateFolder(id: string, name: string): Promise<Folder>;
   deleteFolder(id: string): Promise<void>;
@@ -27,6 +29,7 @@ export interface WordSetRepository {
 
 export interface CardRepository {
   listCards(setId: string, query?: string): Promise<Card[]>;
+  getCard(id: string): Promise<Card | undefined>;
   createCard(setId: string, draft: CardDraft): Promise<Card>;
   updateCard(id: string, draft: CardDraft): Promise<Card>;
   deleteCard(id: string): Promise<void>;
@@ -108,6 +111,7 @@ class IndexedDbLibraryRepository implements LibraryRepository {
   }
 
   async listFolders() { return (await (await db()).getAll("folders")).sort((a, b) => a.createdAt.localeCompare(b.createdAt)); }
+  async getFolder(folderId: string) { return (await db()).get("folders", folderId); }
   async createFolder(name: string) { const timestamp = now(); const folder = { id: id(), name: validName(name, "フォルダ名"), createdAt: timestamp, updatedAt: timestamp }; await (await db()).put("folders", folder); return folder; }
   async updateFolder(folderId: string, name: string) { const database = await db(); const folder = await database.get("folders", folderId); if (!folder) throw new Error("フォルダが見つかりません。"); const updated = { ...folder, name: validName(name, "フォルダ名"), updatedAt: now() }; await database.put("folders", updated); return updated; }
   async deleteFolder(folderId: string) {
@@ -121,6 +125,7 @@ class IndexedDbLibraryRepository implements LibraryRepository {
   async duplicateWordSet(setId: string) { const database = await db(); const original = await database.get("wordSets", setId); if (!original) throw new Error("セットが見つかりません。"); const timestamp = now(); const copy = { ...original, id: id(), name: `${original.name} のコピー`, createdAt: timestamp, updatedAt: timestamp }; const cards = await cardsForSet(database, setId); const transaction = database.transaction(["wordSets", "cards"], "readwrite"); await transaction.objectStore("wordSets").put(copy); await Promise.all(cards.map((card) => transaction.objectStore("cards").put({ ...card, id: id(), setId: copy.id, createdAt: timestamp, updatedAt: timestamp }))); await transaction.done; return copy; }
   async deleteWordSet(setId: string) { const database = await db(); const cards = await cardsForSet(database, setId); const transaction = database.transaction(["wordSets", "cards"], "readwrite"); await transaction.objectStore("wordSets").delete(setId); await Promise.all(cards.map((card) => transaction.objectStore("cards").delete(card.id))); await transaction.done; }
   async listCards(setId: string, query = "") { const cards = await cardsForSet(await db(), setId); const keyword = query.trim().toLocaleLowerCase(); return keyword ? cards.filter((card) => `${card.english} ${card.japanese}`.toLocaleLowerCase().includes(keyword)) : cards; }
+  async getCard(cardId: string) { return (await db()).get("cards", cardId); }
   async createCard(setId: string, draft: CardDraft) { const database = await db(); if (!await database.get("wordSets", setId)) throw new Error("セットが見つかりません。"); const timestamp = now(); const card = { id: id(), setId, orderIndex: (await cardsForSet(database, setId)).length + 1, ...validDraft(draft), createdAt: timestamp, updatedAt: timestamp }; await database.put("cards", card); return card; }
   async updateCard(cardId: string, draft: CardDraft) { const database = await db(); const card = await database.get("cards", cardId); if (!card) throw new Error("単語カードが見つかりません。"); const updated = { ...card, ...validDraft(draft), updatedAt: now() }; await database.put("cards", updated); return updated; }
   async deleteCard(cardId: string) { const database = await db(); const card = await database.get("cards", cardId); if (!card) return; await database.delete("cards", cardId); await normalizeOrders(database, card.setId); }
@@ -140,7 +145,15 @@ class IndexedDbLibraryRepository implements LibraryRepository {
   }
 }
 
-export const libraryRepository: LibraryRepository = new IndexedDbLibraryRepository();
+export const localLibraryRepository: LibraryRepository = new IndexedDbLibraryRepository();
+export type StorageMode = "local" | "cloud";
+let storageMode: StorageMode = typeof window !== "undefined" && window.localStorage.getItem("instant-vocabulary-storage-mode") === "cloud" ? "cloud" : "local";
+const activeRepository = () => storageMode === "cloud" ? cloudLibraryRepository : localLibraryRepository;
+export const getStorageMode = () => storageMode;
+export const setStorageMode = (mode: StorageMode) => { storageMode = mode; if (typeof window !== "undefined") window.localStorage.setItem("instant-vocabulary-storage-mode", mode); };
+export const libraryRepository: LibraryRepository = {
+  ensureInitialData: () => activeRepository().ensureInitialData(), listFolders: () => activeRepository().listFolders(), getFolder: (id) => activeRepository().getFolder(id), createFolder: (name) => activeRepository().createFolder(name), updateFolder: (id, name) => activeRepository().updateFolder(id, name), deleteFolder: (id) => activeRepository().deleteFolder(id), listWordSets: (id) => activeRepository().listWordSets(id), getWordSet: (id) => activeRepository().getWordSet(id), createWordSet: (folderId, name) => activeRepository().createWordSet(folderId, name), updateWordSet: (id, name) => activeRepository().updateWordSet(id, name), duplicateWordSet: (id) => activeRepository().duplicateWordSet(id), deleteWordSet: (id) => activeRepository().deleteWordSet(id), listCards: (id, query) => activeRepository().listCards(id, query), getCard: (id) => activeRepository().getCard(id), createCard: (setId, draft) => activeRepository().createCard(setId, draft), updateCard: (id, draft) => activeRepository().updateCard(id, draft), deleteCard: (id) => activeRepository().deleteCard(id), moveCard: (setId, cardId, direction) => activeRepository().moveCard(setId, cardId, direction), bulkImportCards: (setId, rows, strategy) => activeRepository().bulkImportCards(setId, rows, strategy)
+};
 
 export async function closeDatabaseForTests() { if (dbPromise) { (await dbPromise).close(); dbPromise = undefined; } }
 export async function resetDatabaseForTests() { if (dbPromise) { (await dbPromise).close(); dbPromise = undefined; } await deleteDB(DB_NAME); }
