@@ -33,8 +33,11 @@ export function StudySession({ cards, setName, onExit }: { cards: Card[]; setNam
   const [startedAt, setStartedAt] = useState(0);
   const [finishedAt, setFinishedAt] = useState(0);
   const [swipeX, setSwipeX] = useState(0);
+  const [transitionResult, setTransitionResult] = useState<Result | null>(null);
   const pointerStart = useRef<number | null>(null);
   const lastAutoSpeechKey = useRef("");
+  const transitionTimer = useRef<number | null>(null);
+  const transitionLock = useRef(false);
   const current = queue[position];
   const { voices, loaded: voicesLoaded, supported: speechSupported } = useSpeechVoices();
 
@@ -69,19 +72,24 @@ export function StudySession({ cards, setName, onExit }: { cards: Card[]; setNam
   }, [phase, paused, current, delay, position, round, speak]);
   useEffect(() => { const pauseForVisibility = () => { if (document.hidden && phase === "study") { cancelSpeech(); setPaused(true); } }; document.addEventListener("visibilitychange", pauseForVisibility); return () => document.removeEventListener("visibilitychange", pauseForVisibility); }, [phase]);
   useEffect(() => () => cancelSpeech(), []);
+  useEffect(() => () => { if (transitionTimer.current !== null) window.clearTimeout(transitionTimer.current); }, []);
 
-  const start = () => { const first = random ? shuffle(cards) : [...cards]; lastAutoSpeechKey.current = ""; cancelSpeech(); setQueue(first); setRound(1); setRoundSize(first.length); setPosition(0); setRevealed(false); setPaused(false); setInitialIncorrect(0); setAttempts(0); setSwipeX(0); setStartedAt(Date.now()); setFinishedAt(0); setPhase("study"); };
+  const start = () => { const first = random ? shuffle(cards) : [...cards]; if (transitionTimer.current !== null) window.clearTimeout(transitionTimer.current); transitionTimer.current = null; transitionLock.current = false; lastAutoSpeechKey.current = ""; cancelSpeech(); setTransitionResult(null); setQueue(first); setRound(1); setRoundSize(first.length); setPosition(0); setRevealed(false); setPaused(false); setInitialIncorrect(0); setAttempts(0); setSwipeX(0); setStartedAt(Date.now()); setFinishedAt(0); setPhase("study"); };
   const judge = useCallback((result: Result) => {
-    if (!revealed || !current) return;
-    cancelSpeech(); setRevealed(false); setSwipeX(0); setAttempts((count) => count + 1); if (result === "incorrect" && round === 1) setInitialIncorrect((count) => count + 1);
+    if (!revealed || !current || transitionLock.current) return;
+    transitionLock.current = true;
+    cancelSpeech(); setTransitionResult(result); setSwipeX(0); setAttempts((count) => count + 1); if (result === "incorrect" && round === 1) setInitialIncorrect((count) => count + 1);
     const nextPosition = position + 1; const nextQueue = result === "incorrect" ? [...queue, current] : queue;
-    if (nextPosition < roundSize) { setQueue(nextQueue); setPosition(nextPosition); return; }
-    const missed = nextQueue.slice(roundSize);
-    if (!missed.length) { setFinishedAt(Date.now()); setPhase("result"); return; }
-    const nextRound = random ? shuffle(missed) : missed; setQueue(nextRound); setRound((value) => value + 1); setRoundSize(nextRound.length); setPosition(0);
+    transitionTimer.current = window.setTimeout(() => {
+      transitionTimer.current = null; transitionLock.current = false; setTransitionResult(null); setRevealed(false);
+      if (nextPosition < roundSize) { setQueue(nextQueue); setPosition(nextPosition); return; }
+      const missed = nextQueue.slice(roundSize);
+      if (!missed.length) { setFinishedAt(Date.now()); setPhase("result"); return; }
+      const nextRound = random ? shuffle(missed) : missed; setQueue(nextRound); setRound((value) => value + 1); setRoundSize(nextRound.length); setPosition(0);
+    }, 280);
   }, [current, position, queue, random, revealed, round, roundSize]);
-  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => { if (!revealed || paused) return; if (event.key === "ArrowRight") judge("correct"); if (event.key === "ArrowLeft") judge("incorrect"); };
-  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => { if (!revealed) return; pointerStart.current = event.clientX; event.currentTarget.setPointerCapture(event.pointerId); };
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => { if (!revealed || paused || transitionLock.current) return; if (event.key === "ArrowRight") judge("correct"); if (event.key === "ArrowLeft") judge("incorrect"); };
+  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => { if (!revealed || transitionLock.current) return; pointerStart.current = event.clientX; event.currentTarget.setPointerCapture(event.pointerId); };
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => { if (pointerStart.current !== null) setSwipeX(event.clientX - pointerStart.current); };
   const onPointerUp = () => { if (pointerStart.current === null) return; const distance = swipeX; pointerStart.current = null; setSwipeX(0); if (Math.abs(distance) > window.innerWidth * 0.25) judge(distance > 0 ? "correct" : "incorrect"); };
 
@@ -89,5 +97,5 @@ export function StudySession({ cards, setName, onExit }: { cards: Card[]; setNam
   if (phase === "result") { const seconds = Math.max(1, Math.round((finishedAt - startedAt) / 1000)); const initialCorrect = cards.length - initialIncorrect; return <main className="page result-page"><section className="result-card"><p className="eyebrow">SESSION COMPLETE</p><h1>おつかれさまでした</h1><p className="completion">すべての単語を正答しました。</p><div className="score"><strong>{Math.round((initialCorrect / cards.length) * 100)}<small>%</small></strong><span>初回正答率</span></div><dl><div><dt>初回誤答</dt><dd>{initialIncorrect}語</dd></div><div><dt>復習ラウンド</dt><dd>{round - 1}回</dd></div><div><dt>判定回数</dt><dd>{attempts}回</dd></div><div><dt>学習時間</dt><dd>{Math.floor(seconds / 60)}分{seconds % 60}秒</dd></div></dl><button className="primary" onClick={start}>もう一度学習する</button><button className="text-button" onClick={onExit}>セット詳細へ戻る</button></section></main>; }
 
   const progress = roundSize ? Math.round((position / roundSize) * 100) : 0;
-  return <main className="page study-page" tabIndex={0} onKeyDown={onKeyDown}><header><div><span>{round === 1 ? "通常ラウンド" : `誤答復習 · Round ${round}`}</span><strong>{position + 1} <small>/ {roundSize}</small></strong></div><button className="pause-button" onClick={() => { cancelSpeech(); setPaused(true); }} aria-label="一時停止">Ⅱ</button></header><div className="progress"><i style={{ width: `${progress}%` }} /></div><section className="card-area"><div className={`vocab-card ${revealed ? "is-revealed" : ""} ${swipeX ? "is-dragging" : ""}`} style={{ "--swipe-x": `${swipeX}px`, "--swipe-r": `${swipeX / 30}deg` } as CSSProperties} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}><div className="card-face card-front"><p>ENGLISH</p><h1>{current?.english}</h1><button onClick={() => current && speak(current.english, true)} aria-label="音声を再生">◖</button><span>意味を思い出してください</span></div><div className="card-face card-back"><p>JAPANESE</p><h1>{current?.japanese}</h1><button onClick={() => current && speak(current.english, true)} aria-label="英語音声を再生">◖</button><span>左右にスワイプして判定</span></div></div></section><section className="actions"><button className="incorrect" disabled={!revealed} onClick={() => judge("incorrect")}><kbd>←</kbd><span>誤答</span></button><button className="correct" disabled={!revealed} onClick={() => judge("correct")}><span>正答</span><kbd>→</kbd></button></section><p className="keyboard-hint">キーボードの ← → でも判定できます</p>{paused && <div className="pause-overlay" role="dialog" aria-modal="true"><div><p className="eyebrow">PAUSED</p><h2>学習を一時停止しました</h2><p>再開すると、現在の英単語からもう一度表示します。</p><button className="primary" onClick={() => { lastAutoSpeechKey.current = ""; setRevealed(false); setSwipeX(0); setPaused(false); }}>再開する</button><button className="text-button" onClick={onExit}>学習を終了</button></div></div>}</main>;
+  return <main className="page study-page" tabIndex={0} onKeyDown={onKeyDown}><header><div><span>{round === 1 ? "通常ラウンド" : `誤答復習 · Round ${round}`}</span><strong>{position + 1} <small>/ {roundSize}</small></strong></div><button className="pause-button" onClick={() => { cancelSpeech(); setPaused(true); }} aria-label="一時停止">Ⅱ</button></header><div className="progress"><i style={{ width: `${progress}%` }} /></div><section className="card-area"><div key={`${round}-${position}-${current?.id}`} className={`vocab-card ${revealed ? "is-revealed" : ""} ${swipeX ? "is-dragging" : ""} ${transitionResult ? `is-exiting exit-${transitionResult}` : ""}`} style={{ "--swipe-x": `${swipeX}px`, "--swipe-r": `${swipeX / 30}deg` } as CSSProperties} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}><div className="card-face card-front"><p>ENGLISH</p><h1>{current?.english}</h1><button onClick={() => current && speak(current.english, true)} aria-label="音声を再生">◖</button><span>意味を思い出してください</span></div><div className="card-face card-back"><p>JAPANESE</p><h1>{current?.japanese}</h1><button onClick={() => current && speak(current.english, true)} aria-label="英語音声を再生">◖</button><span>左右にスワイプして判定</span></div></div></section><section className="actions"><button className="incorrect" disabled={!revealed || Boolean(transitionResult)} onClick={() => judge("incorrect")}><kbd>←</kbd><span>誤答</span></button><button className="correct" disabled={!revealed || Boolean(transitionResult)} onClick={() => judge("correct")}><span>正答</span><kbd>→</kbd></button></section><p className="keyboard-hint">キーボードの ← → でも判定できます</p>{paused && <div className="pause-overlay" role="dialog" aria-modal="true"><div><p className="eyebrow">PAUSED</p><h2>学習を一時停止しました</h2><p>再開すると、現在の英単語からもう一度表示します。</p><button className="primary" onClick={() => { lastAutoSpeechKey.current = ""; setRevealed(false); setSwipeX(0); setPaused(false); }}>再開する</button><button className="text-button" onClick={onExit}>学習を終了</button></div></div>}</main>;
 }
