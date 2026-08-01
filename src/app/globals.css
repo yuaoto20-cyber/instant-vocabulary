@@ -24,3 +24,4 @@
 .vocab-card.is-exiting { pointer-events: none; }
 .vocab-card.is-exiting.exit-correct { transform: translateX(115%) rotate(12deg) rotateY(180deg); }
 .vocab-card.is-exiting.exit-incorrect { transform: translateX(-115%) rotate(-12deg) rotateY(180deg); }
+.result-card .primary small { display: block; margin: 5px 0 0; color: #ffffffc7; }

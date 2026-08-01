@@ -88,6 +88,17 @@ function VocabularyApp() {
 
   const openFolder = async (folder: Folder) => { try { setError(""); setSelectedFolder(folder); setEditingFolder(false); setFolderName(folder.name); await loadSets(folder.id); setView("folder"); } catch (reason) { fail(reason); } };
   const openSet = async (wordSet: WordSetSummary) => { try { setError(""); setSelectedSet(wordSet); setEditingSet(false); setSetName(wordSet.name); setSearch(""); const latestCards = await libraryRepository.listCards(wordSet.id); setCards(latestCards); setTotalCardCount(latestCards.length); setView("set"); } catch (reason) { fail(reason); } };
+  const openNextSet = async () => {
+    if (!selectedFolder || !selectedSet) return;
+    try {
+      setError("");
+      const orderedSets = await libraryRepository.listWordSets(selectedFolder.id);
+      const next = orderedSets[orderedSets.findIndex((item) => item.id === selectedSet.id) + 1];
+      if (!next || !next.cardCount) return;
+      const nextCards = await libraryRepository.listCards(next.id);
+      setSets(orderedSets); setSelectedSet(next); setEditingSet(false); setSetName(next.name); setSearch(""); setCards(nextCards); setTotalCardCount(nextCards.length); setView("study");
+    } catch (reason) { fail(reason); }
+  };
 
   const submitFolder = async (event: FormEvent) => { event.preventDefault(); try { await libraryRepository.createFolder(folderName); setFolderName(""); await loadFolders(); } catch (reason) { fail(reason); } };
   const submitSet = async (event: FormEvent) => { event.preventDefault(); if (!selectedFolder) return; try { await libraryRepository.createWordSet(selectedFolder.id, setName); setSetName(""); await loadSets(selectedFolder.id); } catch (reason) { fail(reason); } };
@@ -96,7 +107,9 @@ function VocabularyApp() {
   const confirm = async () => { if (!confirmation) return; try { await confirmation.run(); setConfirmation(null); } catch (reason) { fail(reason); } };
 
   if (view === "bulk" && selectedSet && selectedFolder) return <BulkImportScreen folderName={selectedFolder.name} wordSet={selectedSet} existingCards={cards} onBack={() => void openSet(selectedSet)} onStartStudy={() => void (async () => { try { setCards(await libraryRepository.listCards(selectedSet.id)); setView("study"); } catch (reason) { fail(reason); } })()} />;
-  if (view === "study" && selectedSet) return <StudySession cards={cards} setName={selectedSet.name} onExit={() => setView("set")} />;
+  const currentSetIndex = selectedSet ? sets.findIndex((item) => item.id === selectedSet.id) : -1;
+  const nextSet = currentSetIndex >= 0 ? sets[currentSetIndex + 1] : undefined;
+  if (view === "study" && selectedSet) return <StudySession key={selectedSet.id} cards={cards} setName={selectedSet.name} nextSetName={nextSet?.cardCount ? nextSet.name : undefined} onNextSet={nextSet?.cardCount ? () => void openNextSet() : undefined} onExit={() => setView("set")} />;
   if (!ready) return <main className="page centered"><p>教材を読み込んでいます…</p></main>;
 
   return <main className="page library-page">
